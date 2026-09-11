@@ -1,7 +1,5 @@
-
 from supabase import create_client
 import json
-import time
 from pathlib import Path
 
 import joblib
@@ -27,9 +25,19 @@ from config import (
     ROLLING_WINDOW,
     UTILIZATION_CRITICAL_PCT,
     UTILIZATION_WARNING_PCT,
+    DEFAULT_INTERFACE_SPEED_MBPS,
+    DEFAULT_PROBE_HOST,
+)
+
+from network_utils import (
+    NetworkSampler,
+    choose_interface,
+    get_default_gateway,
 )
 
 from train import build_features
+
+
 
 @st.cache_resource
 def get_supabase_client():
@@ -42,13 +50,151 @@ def get_supabase_client():
     )
 
 
+
+@st.cache_resource
+def get_network_sampler():
+    """
+    Create and cache the network sampler.
+
+    The sampler is created once and reused across dashboard
+    refreshes.
+    """
+
+    try:
+        interface = choose_interface()
+
+        if not interface:
+            return None
+
+        probe = get_default_gateway() or DEFAULT_PROBE_HOST
+
+        sampler = NetworkSampler(
+            interface=interface,
+            probe_host=probe,
+            fallback_speed_mbps=DEFAULT_INTERFACE_SPEED_MBPS,
+        )
+
+        return sampler
+
+    except Exception as exc:
+        st.warning(
+            f"Could not initialize network collector: {exc}"
+        )
+
+        return None
+
+
+def clean_value(value):
+    """
+    Convert invalid numeric values such as NaN into None
+    before sending data to Supabase.
+    """
+
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    return value
+
+def prepare_network_record(row):
+    fields = [
+        "timestamp",
+        "interface",
+        "probe_host",
+        "bandwidth_mbps",
+        "rx_mbps",
+        "tx_mbps",
+        "throughput_mbps",
+        "traffic_volume_mb",
+        "packet_rate",
+        "latency_ms",
+        "packet_loss_pct",
+        "jitter_ms",
+        "bandwidth_utilization_pct",
+        "cpu_utilization_pct",
+        "memory_utilization_pct",
+        "interface_errors",
+        "interface_drops",
+        "network_available",
+    ]
+
+    record = {}
+
+    for field in fields:
+        value = clean_value(row.get(field))
+
+       
+        if field == "timestamp":
+            if value is not None:
+                value = pd.to_datetime(
+                    float(value),
+                    unit="s",
+                    utc=True
+                ).isoformat()
+
+    
+        if field in {
+            "interface_errors",
+            "interface_drops",
+            "network_available",
+        }:
+            if value is not None:
+                value = int(round(float(value)))
+
+        record[field] = value
+
+    return record
+
+    
+
+def collect_network_measurement():
+    """
+    Collect one network measurement and store it in Supabase.
+
+    This replaces the need to manually run collector.py
+    for the Streamlit deployment.
+    """
+
+    sampler = get_network_sampler()
+
+    if sampler is None:
+        return None
+
+    try:
+        row = sampler.sample()
+
+        record = prepare_network_record(row)
+
+        supabase = get_supabase_client()
+
+        supabase.table(
+            "network_metrics"
+        ).insert(
+            record
+        ).execute()
+
+        return row
+
+    except Exception as exc:
+
+        st.warning(
+            f"Could not collect network measurement: {exc}"
+        )
+
+        return None
+
+
 st.set_page_config(
     page_title="Predictive Network Management System",
     page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
 
 st.markdown(
     """
@@ -104,7 +250,6 @@ st.markdown(
 )
 
 
-
 @st.cache_resource
 def load_models():
     """
@@ -123,12 +268,18 @@ def load_models():
         return joblib.load(model_path)
 
     except Exception as exc:
-        st.error(f"Could not load model file: {exc}")
+        st.error(
+            f"Could not load model file: {exc}"
+        )
+
         return None
 
 
 
-@st.cache_data(ttl=4)
+@st.cache_data(
+    ttl=4,
+    show_spinner=False,
+)
 def load_metrics():
     """
     Read the latest network measurements from Supabase.
@@ -165,8 +316,6 @@ def load_metrics():
     if df.empty:
         return df
 
-   
-
     if "timestamp" in df.columns:
 
         df["timestamp"] = pd.to_datetime(
@@ -181,8 +330,6 @@ def load_metrics():
         df = df.sort_values(
             "timestamp"
         )
-
-  
 
     numeric_columns = [
         "throughput_mbps",
@@ -217,6 +364,7 @@ def load_metrics():
     return df.reset_index(drop=True)
 
 
+
 def status_for(
     value,
     warning_threshold,
@@ -249,7 +397,6 @@ def status_for(
     return "NORMAL"
 
 
-
 def status_emoji(status):
 
     if status == "CRITICAL":
@@ -259,7 +406,6 @@ def status_emoji(status):
         return "🟠"
 
     return "🟢"
-
 
 
 def safe_float(value):
@@ -278,6 +424,8 @@ def safe_float(value):
     return np.nan
 
 
+
+
 def recommendations(
     utilization,
     latency,
@@ -289,7 +437,6 @@ def recommendations(
     """
 
     recommendations_list = []
-
 
     if utilization >= CONGESTION_UTILIZATION_PCT:
 
@@ -305,7 +452,6 @@ def recommendations(
             "growth and consider load balancing or capacity planning."
         )
 
-
     if latency >= CONGESTION_LATENCY_MS:
 
         recommendations_list.append(
@@ -319,7 +465,6 @@ def recommendations(
             "Latency is elevated. Check network congestion and "
             "the quality of the current route."
         )
-
 
     if packet_loss >= CONGESTION_PACKET_LOSS_PCT:
 
@@ -335,7 +480,6 @@ def recommendations(
             "and investigate retransmissions or unstable connectivity."
         )
 
-
     if jitter >= CONGESTION_JITTER_MS:
 
         recommendations_list.append(
@@ -350,8 +494,6 @@ def recommendations(
             "and investigate congestion."
         )
 
-
-
     if not recommendations_list:
 
         recommendations_list.append(
@@ -360,6 +502,8 @@ def recommendations(
         )
 
     return recommendations_list
+
+
 
 
 def plot_metric(
@@ -431,7 +575,6 @@ def plot_metric(
 
 
 
-
 def run_predictions(df, models):
     """
     Run ML predictions using only the recent data needed
@@ -463,7 +606,6 @@ def run_predictions(df, models):
 
         return results
 
-
     feature_columns = models.get(
         "feature_columns"
     )
@@ -475,8 +617,6 @@ def run_predictions(df, models):
         )
 
         return results
-
-
 
     required_rows = max(
         int(ROLLING_WINDOW),
@@ -495,8 +635,6 @@ def run_predictions(df, models):
 
         return results
 
- 
-
     try:
 
         import train
@@ -506,9 +644,6 @@ def run_predictions(df, models):
     except Exception:
         pass
 
-    # --------------------------------------------------------
-    # Build features
-    # --------------------------------------------------------
 
     try:
 
@@ -532,8 +667,6 @@ def run_predictions(df, models):
 
         return results
 
-  
-
     missing_columns = [
         column
         for column in feature_columns
@@ -549,7 +682,6 @@ def run_predictions(df, models):
 
         return results
 
-  
     X = feature_df[
         feature_columns
     ].copy()
@@ -570,8 +702,6 @@ def run_predictions(df, models):
         return results
 
     X_latest = X.tail(1)
-
-  
 
     classifier = (
         models.get("classifier")
@@ -594,8 +724,6 @@ def run_predictions(df, models):
             results["classification_error"] = str(
                 exc
             )
-
- 
 
     regression_models = models.get(
         "regression_models",
@@ -630,8 +758,6 @@ def run_predictions(df, models):
     results[
         "regression_predictions"
     ] = regression_predictions
-
-  
 
     target_model_names = {
 
@@ -681,7 +807,6 @@ def run_predictions(df, models):
 
                 continue
 
-
     anomaly_model = (
         models.get("anomaly_model")
         or models.get("anomaly_detector")
@@ -713,12 +838,10 @@ def run_predictions(df, models):
 
 
 @st.cache_data(
-    ttl=60,
+    ttl=4,
     show_spinner=False,
 )
 def cached_predictions(
-    csv_modified_ns,
-    csv_size,
     row_count,
     df_for_prediction,
     model_signature,
@@ -726,21 +849,13 @@ def cached_predictions(
     """
     Cache prediction calculations.
 
-    The cache is invalidated when the CSV changes.
-
-    The dataframe passed here contains only the recent rows
-    needed for prediction rather than the complete historical
-    dataset.
+    The cache is refreshed periodically as new Supabase
+    measurements arrive.
     """
 
-
-
-    del csv_modified_ns
-    del csv_size
     del row_count
     del model_signature
 
-    
     models = load_models()
 
     return run_predictions(
@@ -751,32 +866,19 @@ def cached_predictions(
 
 def get_predictions(df):
     """
-    Get cached predictions based on the current CSV state.
+    Get cached predictions using the latest Supabase data.
     """
 
-    metrics_path = Path(METRICS_FILE)
     model_path = Path(MODEL_FILE)
 
-    if not metrics_path.exists():
+    if df.empty:
 
         return {
             "available": False,
-            "error": "Metrics file does not exist.",
+            "error": "No network measurements are available.",
         }
 
-    try:
-
-        metrics_stat = metrics_path.stat()
-
-        csv_modified_ns = metrics_stat.st_mtime_ns
-        csv_size = metrics_stat.st_size
-        row_count = len(df)
-
-    except OSError:
-
-        csv_modified_ns = 0
-        csv_size = 0
-        row_count = len(df)
+    row_count = len(df)
 
     try:
 
@@ -794,20 +896,15 @@ def get_predictions(df):
             0,
         )
 
-  
     recent_rows = df.tail(
         max(int(ROLLING_WINDOW), 2)
     ).copy()
 
     return cached_predictions(
-        csv_modified_ns,
-        csv_size,
         row_count,
         recent_rows,
         model_signature,
     )
-
-
 
 
 with st.sidebar:
@@ -884,11 +981,8 @@ with st.sidebar:
     )
 
 
-
-
 @st.fragment(run_every=refresh)
 def live_dashboard():
-
 
     refresh_count = (
         st.session_state.get(
@@ -902,8 +996,6 @@ def live_dashboard():
         "dashboard_refresh_count"
     ] = refresh_count
 
-   
-
     st.title(
         "📡 Predictive Network Management System"
     )
@@ -913,57 +1005,22 @@ def live_dashboard():
         "anomaly detection and proactive network management."
     )
 
-  
+
+    collect_network_measurement()
+
 
     models = load_models()
+
+    load_metrics.clear()
+
     df = load_metrics()
 
 
-    metrics_path = Path(
-        METRICS_FILE
+    st.caption(
+        f"📡 Live dashboard • "
+        f"Refresh #{refresh_count} • "
+        f"Samples: {len(df):,}"
     )
-
-    if metrics_path.exists():
-
-        try:
-
-            file_stat = metrics_path.stat()
-
-            modified_time = time.strftime(
-                "%Y-%m-%d %H:%M:%S",
-                time.localtime(
-                    file_stat.st_mtime
-                ),
-            )
-
-            file_size_kb = (
-                file_stat.st_size / 1024
-            )
-
-            st.caption(
-                f"📡 Live dashboard • "
-                f"Refresh #{refresh_count} • "
-                f"Samples: {len(df):,} • "
-                f"CSV modified: {modified_time} • "
-                f"File size: {file_size_kb:.1f} KB"
-            )
-
-        except OSError:
-
-            st.caption(
-                f"📡 Live dashboard • "
-                f"Refresh #{refresh_count}"
-            )
-
-    else:
-
-        st.warning(
-            "Metrics file does not exist yet:\n\n"
-            f"`{metrics_path}`"
-        )
-
-        return
-
 
 
     if df.empty:
@@ -973,20 +1030,17 @@ def live_dashboard():
         )
 
         st.info(
-            "Start the collector with:\n\n"
-            "`python collector.py`"
+            "Waiting for network measurements..."
         )
 
         return
 
- 
 
     latest = df.iloc[-1]
 
     latest_timestamp = latest.get(
         "timestamp"
     )
-
 
     if (
         "timestamp" in df.columns
@@ -1016,7 +1070,6 @@ def live_dashboard():
     if history.empty:
         history = df.copy()
 
-  
 
     utilization = safe_float(
         latest.get(
@@ -1053,7 +1106,7 @@ def live_dashboard():
         )
     )
 
-   
+    
 
     utilization_status = status_for(
         utilization,
@@ -1098,8 +1151,6 @@ def live_dashboard():
 
         overall_status = "NORMAL"
 
-  
-
     if overall_status == "CRITICAL":
 
         st.error(
@@ -1118,7 +1169,7 @@ def live_dashboard():
             "🟢 NETWORK STATUS: NORMAL"
         )
 
-
+   
 
     st.subheader(
         "📊 Current Network Metrics"
@@ -1218,8 +1269,6 @@ def live_dashboard():
                 ),
             )
 
-  
-
     if pd.notna(latest_timestamp):
 
         st.caption(
@@ -1270,7 +1319,7 @@ def live_dashboard():
                 f"Probe latency: {latency:.2f} ms"
             )
 
- 
+    
 
     st.subheader(
         "🤖 Predictive Analytics"
@@ -1388,8 +1437,6 @@ def live_dashboard():
                     "were returned."
                 )
 
-   
-
         anomaly_prediction = (
             prediction_results.get(
                 "anomaly_prediction"
@@ -1412,6 +1459,7 @@ def live_dashboard():
                     "Normal network behaviour"
                 )
 
+   
 
     st.subheader(
         "🚨 Active Alerts"
@@ -1469,6 +1517,7 @@ def live_dashboard():
             "No active network alerts."
         )
 
+  
 
     st.subheader(
         "💡 Proactive Recommendations"
@@ -1487,12 +1536,12 @@ def live_dashboard():
             f"💡 {recommendation}"
         )
 
+   
 
     st.subheader(
         f"📈 Historical Network Performance "
         f"({history_minutes} minutes)"
     )
-
 
     plot_metric(
         history,
@@ -1502,8 +1551,6 @@ def live_dashboard():
         "Utilization (%)",
     )
 
-
-
     plot_metric(
         history,
         "timestamp",
@@ -1511,8 +1558,6 @@ def live_dashboard():
         "Network Throughput",
         "Throughput (Mbps)",
     )
-
-  
 
     plot_metric(
         history,
@@ -1522,7 +1567,6 @@ def live_dashboard():
         "Latency (ms)",
     )
 
-
     plot_metric(
         history,
         "timestamp",
@@ -1530,8 +1574,6 @@ def live_dashboard():
         "Packet Loss",
         "Packet Loss (%)",
     )
-
- 
 
     plot_metric(
         history,
@@ -1541,6 +1583,7 @@ def live_dashboard():
         "Jitter (ms)",
     )
 
+   
 
     st.subheader(
         "📐 Rolling Network Statistics"
@@ -1667,6 +1710,7 @@ def live_dashboard():
                         f"{value:.2f} ms",
                     )
 
+   
 
     resource_columns = []
 
@@ -1765,6 +1809,7 @@ def live_dashboard():
         )
 
 
+
     st.subheader(
         "📋 Latest Measurements"
     )
@@ -1778,8 +1823,6 @@ def live_dashboard():
         table_rows
     ).copy()
 
-    
-
     if "timestamp" in latest_table.columns:
 
         latest_table[
@@ -1789,8 +1832,6 @@ def live_dashboard():
         ].dt.strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-
-
 
     for column in latest_table.columns:
 
@@ -1810,7 +1851,7 @@ def live_dashboard():
         hide_index=True,
     )
 
-   
+  
 
     st.divider()
 

@@ -1,35 +1,35 @@
-# Python
+
 __pycache__/
 *.py[cod]
 
-# Virtual environments
+
 venv/
 .venv/
 env/
 
-# Environment variables
+
 .env
 .env.*
 
-# Streamlit secrets
+
 .streamlit/secrets.toml
 
-# Local databases
+
 *.sqlite3
 db.sqlite3
 
-# Logs
+
 logs/
 *.log
 
-# OS
+
 .DS_Store
 Thumbs.db
 
-# IDE
+
 .vscode/
 .idea/
 
-# Temporary files
+
 *.tmp
 *.temp

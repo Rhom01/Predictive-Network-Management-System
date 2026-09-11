@@ -149,9 +149,7 @@ def main():
     print("CLOUD NETWORK COLLECTOR")
     print("=" * 70)
 
-    # ---------------------------------------------------------
-    # Connect to Supabase
-    # ---------------------------------------------------------
+ 
 
     try:
 
@@ -169,10 +167,7 @@ def main():
 
         raise SystemExit(1)
 
-    # ---------------------------------------------------------
-    # Select network interface
-    # ---------------------------------------------------------
-
+    
     interface = choose_interface()
 
     if not interface:
@@ -181,9 +176,7 @@ def main():
             "No usable network interface was found."
         )
 
-    # ---------------------------------------------------------
-    # Determine probe host
-    # ---------------------------------------------------------
+ 
 
     probe = (
         get_default_gateway()
@@ -214,9 +207,7 @@ def main():
 
     print()
 
-    # ---------------------------------------------------------
-    # Create sampler
-    # ---------------------------------------------------------
+   
 
     sampler = NetworkSampler(
         interface=interface,
@@ -224,9 +215,6 @@ def main():
         fallback_speed_mbps=DEFAULT_INTERFACE_SPEED_MBPS
     )
 
-    # ---------------------------------------------------------
-    # Signal handlers
-    # ---------------------------------------------------------
 
     signal.signal(
         signal.SIGINT,
@@ -240,9 +228,7 @@ def main():
             stop_handler
         )
 
-    # ---------------------------------------------------------
-    # Main collection loop
-    # ---------------------------------------------------------
+ 
 
     sample_number = 0
 
