@@ -1,0 +1,18 @@
+{
+    "rows_total": 416,
+    "training_rows": 332,
+    "testing_rows": 84,
+    "accuracy": 0.8214285714285714,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "roc_auc": 0.35051020408163264,
+    "regression_mae": {
+        "bandwidth_utilization_pct": 0.0,
+        "latency_ms": 3.906759923970708,
+        "packet_loss_pct": 0.0,
+        "jitter_ms": 3.915143998327919
+    },
+    "normal_observations": 332,
+    "degraded_observations": 84
+}
