@@ -1,5 +1,6 @@
 from supabase import create_client
 import json
+import random
 from pathlib import Path
 
 import joblib
@@ -29,165 +30,12 @@ from config import (
     DEFAULT_PROBE_HOST,
 )
 
-from network_utils import (
-    NetworkSampler,
-    choose_interface,
-    get_default_gateway,
-)
-
 from train import build_features
 
 
-
-@st.cache_resource
-def get_supabase_client():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_ANON_KEY"]
-
-    return create_client(
-        url,
-        key
-    )
-
-
-
-@st.cache_resource
-def get_network_sampler():
-    """
-    Create and cache the network sampler.
-
-    The sampler is created once and reused across dashboard
-    refreshes.
-    """
-
-    try:
-        interface = choose_interface()
-
-        if not interface:
-            return None
-
-        probe = get_default_gateway() or DEFAULT_PROBE_HOST
-
-        sampler = NetworkSampler(
-            interface=interface,
-            probe_host=probe,
-            fallback_speed_mbps=DEFAULT_INTERFACE_SPEED_MBPS,
-        )
-
-        return sampler
-
-    except Exception as exc:
-        st.warning(
-            f"Could not initialize network collector: {exc}"
-        )
-
-        return None
-
-
-def clean_value(value):
-    """
-    Convert invalid numeric values such as NaN into None
-    before sending data to Supabase.
-    """
-
-    if value is None:
-        return None
-
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
-
-    return value
-
-def prepare_network_record(row):
-    fields = [
-        "timestamp",
-        "interface",
-        "probe_host",
-        "bandwidth_mbps",
-        "rx_mbps",
-        "tx_mbps",
-        "throughput_mbps",
-        "traffic_volume_mb",
-        "packet_rate",
-        "latency_ms",
-        "packet_loss_pct",
-        "jitter_ms",
-        "bandwidth_utilization_pct",
-        "cpu_utilization_pct",
-        "memory_utilization_pct",
-        "interface_errors",
-        "interface_drops",
-        "network_available",
-    ]
-
-    record = {}
-
-    for field in fields:
-        value = clean_value(row.get(field))
-
-       
-        if field == "timestamp":
-            if value is not None:
-                value = pd.to_datetime(
-                    float(value),
-                    unit="s",
-                    utc=True
-                ).isoformat()
-
-    
-        if field in {
-            "interface_errors",
-            "interface_drops",
-            "network_available",
-        }:
-            if value is not None:
-                value = int(round(float(value)))
-
-        record[field] = value
-
-    return record
-
-    
-
-def collect_network_measurement():
-    """
-    Collect one network measurement and store it in Supabase.
-
-    This replaces the need to manually run collector.py
-    for the Streamlit deployment.
-    """
-
-    sampler = get_network_sampler()
-
-    if sampler is None:
-        return None
-
-    try:
-        row = sampler.sample()
-
-        record = prepare_network_record(row)
-
-        supabase = get_supabase_client()
-
-        supabase.table(
-            "network_metrics"
-        ).insert(
-            record
-        ).execute()
-
-        return row
-
-    except Exception as exc:
-
-        st.warning(
-            f"Could not collect network measurement: {exc}"
-        )
-
-        return None
-
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 
 st.set_page_config(
     page_title="Predictive Network Management System",
@@ -195,6 +43,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# ============================================================
+# CUSTOM CSS
+# ============================================================
 
 st.markdown(
     """
@@ -244,30 +97,69 @@ st.markdown(
             color: #777;
             font-size: 0.85rem;
         }
+
+        .demo-banner {
+            padding: 12px 16px;
+            border-radius: 10px;
+            background-color: rgba(255, 193, 7, 0.10);
+            border: 1px solid rgba(255, 193, 7, 0.35);
+            margin-bottom: 15px;
+        }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
+# ============================================================
+# SUPABASE
+# ============================================================
+
+@st.cache_resource
+def get_supabase_client():
+
+    try:
+
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_ANON_KEY"]
+
+        return create_client(
+            url,
+            key,
+        )
+
+    except Exception as exc:
+
+        st.error(
+            f"Supabase connection error: {exc}"
+        )
+
+        return None
+
+
+# ============================================================
+# MODEL LOADING
+# ============================================================
+
 @st.cache_resource
 def load_models():
-    """
-    Load trained predictive models.
 
-    Models are cached so they are NOT loaded from disk
-    on every live dashboard refresh.
-    """
-
-    model_path = Path(MODEL_FILE)
+    model_path = Path(
+        MODEL_FILE
+    )
 
     if not model_path.exists():
+
         return None
 
     try:
-        return joblib.load(model_path)
+
+        return joblib.load(
+            model_path
+        )
 
     except Exception as exc:
+
         st.error(
             f"Could not load model file: {exc}"
         )
@@ -275,25 +167,32 @@ def load_models():
         return None
 
 
+# ============================================================
+# SUPABASE METRICS
+# ============================================================
 
 @st.cache_data(
     ttl=4,
     show_spinner=False,
 )
 def load_metrics():
-    """
-    Read the latest network measurements from Supabase.
-    """
 
     try:
 
         supabase = get_supabase_client()
 
+        if supabase is None:
+
+            return pd.DataFrame()
+
         response = (
             supabase
             .table("network_metrics")
             .select("*")
-            .order("timestamp", desc=True)
+            .order(
+                "timestamp",
+                desc=True,
+            )
             .limit(2000)
             .execute()
         )
@@ -301,9 +200,12 @@ def load_metrics():
         rows = response.data or []
 
         if not rows:
+
             return pd.DataFrame()
 
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(
+            rows
+        )
 
     except Exception as exc:
 
@@ -314,6 +216,7 @@ def load_metrics():
         return pd.DataFrame()
 
     if df.empty:
+
         return df
 
     if "timestamp" in df.columns:
@@ -332,6 +235,7 @@ def load_metrics():
         )
 
     numeric_columns = [
+
         "throughput_mbps",
         "traffic_volume_mb",
         "latency_ms",
@@ -361,70 +265,334 @@ def load_metrics():
                 errors="coerce",
             )
 
-    return df.reset_index(drop=True)
+    return df.reset_index(
+        drop=True
+    )
 
 
+# ============================================================
+# DEMO NETWORK DATA
+# ============================================================
+
+def generate_demo_network_measurement():
+
+    """
+    Generate a realistic changing network measurement.
+
+    These values are for dashboard demonstration purposes.
+    They are NOT real measurements from the visitor's network.
+    """
+
+    bandwidth_mbps = round(
+        random.uniform(
+            80,
+            150,
+        ),
+        2,
+    )
+
+    utilization = round(
+        random.uniform(
+            25,
+            65,
+        ),
+        2,
+    )
+
+    throughput = round(
+        random.uniform(
+            15,
+            100,
+        ),
+        2,
+    )
+
+    latency = round(
+        random.uniform(
+            20,
+            90,
+        ),
+        2,
+    )
+
+    packet_loss = round(
+        random.uniform(
+            0.1,
+            2.5,
+        ),
+        2,
+    )
+
+    jitter = round(
+        random.uniform(
+            5,
+            35,
+        ),
+        2,
+    )
+
+    traffic_volume = round(
+        random.uniform(
+            50,
+            500,
+        ),
+        2,
+    )
+
+    packet_rate = round(
+        random.uniform(
+            100,
+            1500,
+        ),
+        2,
+    )
+
+    rx_mbps = round(
+        random.uniform(
+            10,
+            70,
+        ),
+        2,
+    )
+
+    tx_mbps = round(
+        random.uniform(
+            5,
+            50,
+        ),
+        2,
+    )
+
+    cpu = round(
+        random.uniform(
+            20,
+            70,
+        ),
+        2,
+    )
+
+    memory = round(
+        random.uniform(
+            30,
+            75,
+        ),
+        2,
+    )
+
+    connections = random.randint(
+        10,
+        150,
+    )
+
+    packets_sent = random.randint(
+        1000,
+        10000,
+    )
+
+    packets_received = random.randint(
+        1000,
+        10000,
+    )
+
+    interface_errors = random.randint(
+        0,
+        3,
+    )
+
+    interface_drops = random.randint(
+        0,
+        5,
+    )
+
+    return {
+
+        "timestamp": pd.Timestamp.now(
+            tz="UTC"
+        ),
+
+        "interface": "demo-interface",
+
+        "probe_host": "demo-network",
+
+        "bandwidth_mbps": bandwidth_mbps,
+
+        "rx_mbps": rx_mbps,
+
+        "tx_mbps": tx_mbps,
+
+        "throughput_mbps": throughput,
+
+        "traffic_volume_mb": traffic_volume,
+
+        "packet_rate": packet_rate,
+
+        "latency_ms": latency,
+
+        "packet_loss_pct": packet_loss,
+
+        "jitter_ms": jitter,
+
+        "bandwidth_utilization_pct": utilization,
+
+        "cpu_utilization_pct": cpu,
+
+        "memory_utilization_pct": memory,
+
+        "interface_errors": interface_errors,
+
+        "interface_drops": interface_drops,
+
+        "network_available": 1,
+
+        "connections": connections,
+
+        "packets_sent": packets_sent,
+
+        "packets_received": packets_received,
+    }
+
+
+# ============================================================
+# ADD DEMO MEASUREMENT TO DASHBOARD DATA
+# ============================================================
+
+def add_demo_measurement(
+    df
+):
+
+    demo_row = (
+        generate_demo_network_measurement()
+    )
+
+    demo_df = pd.DataFrame(
+        [demo_row]
+    )
+
+    if df.empty:
+
+        return demo_df
+
+    for column in df.columns:
+
+        if column not in demo_df.columns:
+
+            demo_df[column] = np.nan
+
+    for column in demo_df.columns:
+
+        if column not in df.columns:
+
+            df[column] = np.nan
+
+    combined = pd.concat(
+        [
+            df,
+            demo_df[
+                df.columns
+            ],
+        ],
+        ignore_index=True,
+    )
+
+    combined = combined.sort_values(
+        "timestamp"
+    ).reset_index(
+        drop=True
+    )
+
+    return combined
+
+
+# ============================================================
+# STATUS
+# ============================================================
 
 def status_for(
     value,
     warning_threshold,
     critical_threshold,
 ):
-    """
-    Determine NORMAL / WARNING / CRITICAL status.
-
-    Higher values represent worse conditions.
-    """
 
     if value is None:
+
         return "NORMAL"
 
     try:
+
         value = float(value)
 
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError,
+    ):
+
         return "NORMAL"
 
-    if not np.isfinite(value):
+    if not np.isfinite(
+        value
+    ):
+
         return "NORMAL"
 
     if value >= critical_threshold:
+
         return "CRITICAL"
 
     if value >= warning_threshold:
+
         return "WARNING"
 
     return "NORMAL"
 
 
-def status_emoji(status):
+def status_emoji(
+    status
+):
 
     if status == "CRITICAL":
+
         return "🔴"
 
     if status == "WARNING":
+
         return "🟠"
 
     return "🟢"
 
 
-def safe_float(value):
+# ============================================================
+# SAFE FLOAT
+# ============================================================
+
+def safe_float(
+    value
+):
 
     try:
 
-        value = float(value)
+        value = float(
+            value
+        )
 
-        if np.isfinite(value):
+        if np.isfinite(
+            value
+        ):
+
             return value
 
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError,
+    ):
 
         pass
 
     return np.nan
 
 
-
+# ============================================================
+# RECOMMENDATIONS
+# ============================================================
 
 def recommendations(
     utilization,
@@ -432,9 +600,6 @@ def recommendations(
     packet_loss,
     jitter,
 ):
-    """
-    Generate proactive network-management recommendations.
-    """
 
     recommendations_list = []
 
@@ -504,7 +669,9 @@ def recommendations(
     return recommendations_list
 
 
-
+# ============================================================
+# PLOT METRIC
+# ============================================================
 
 def plot_metric(
     data,
@@ -513,26 +680,36 @@ def plot_metric(
     title,
     y_axis_title,
 ):
-    """
-    Create a Plotly time-series chart.
-    """
 
     if data.empty:
-        st.info("No historical data available.")
+
+        st.info(
+            "No historical data available."
+        )
+
         return
 
     if x_column not in data.columns:
-        st.info("Timestamp data is not available.")
+
+        st.info(
+            "Timestamp data is not available."
+        )
+
         return
 
     if y_column not in data.columns:
+
         st.info(
             f"{y_column} is not available in the collected data."
         )
+
         return
 
     chart_data = data[
-        [x_column, y_column]
+        [
+            x_column,
+            y_column,
+        ]
     ].dropna()
 
     if chart_data.empty:
@@ -547,9 +724,13 @@ def plot_metric(
 
     fig.add_trace(
         go.Scatter(
-            x=chart_data[x_column],
-            y=chart_data[y_column],
-            mode="lines",
+            x=chart_data[
+                x_column
+            ],
+            y=chart_data[
+                y_column
+            ],
+            mode="lines+markers",
             name=y_column,
         )
     )
@@ -574,15 +755,14 @@ def plot_metric(
     )
 
 
+# ============================================================
+# RUN ML PREDICTIONS
+# ============================================================
 
-def run_predictions(df, models):
-    """
-    Run ML predictions using only the recent data needed
-    for the rolling features.
-
-    This is significantly lighter than running build_features()
-    on the entire historical CSV every refresh.
-    """
+def run_predictions(
+    df,
+    models,
+):
 
     results = {
         "available": False,
@@ -627,24 +807,6 @@ def run_predictions(df, models):
         required_rows
     ).copy()
 
-    if prediction_df.empty:
-
-        results["error"] = (
-            "Prediction dataset is empty."
-        )
-
-        return results
-
-    try:
-
-        import train
-
-        train.ROLLING_FEATURES.clear()
-
-    except Exception:
-        pass
-
-
     try:
 
         feature_df = build_features(
@@ -668,8 +830,11 @@ def run_predictions(df, models):
         return results
 
     missing_columns = [
+
         column
+
         for column in feature_columns
+
         if column not in feature_df.columns
     ]
 
@@ -677,7 +842,9 @@ def run_predictions(df, models):
 
         results["error"] = (
             "Missing model features: "
-            + ", ".join(missing_columns)
+            + ", ".join(
+                missing_columns
+            )
         )
 
         return results
@@ -687,7 +854,10 @@ def run_predictions(df, models):
     ].copy()
 
     X = X.replace(
-        [np.inf, -np.inf],
+        [
+            np.inf,
+            -np.inf,
+        ],
         np.nan,
     )
 
@@ -701,12 +871,20 @@ def run_predictions(df, models):
 
         return results
 
-    X_latest = X.tail(1)
+    X_latest = X.tail(
+        1
+    )
 
     classifier = (
-        models.get("classifier")
-        or models.get("classification_model")
-        or models.get("model")
+        models.get(
+            "classifier"
+        )
+        or models.get(
+            "classification_model"
+        )
+        or models.get(
+            "model"
+        )
     )
 
     if classifier is not None:
@@ -717,11 +895,15 @@ def run_predictions(df, models):
                 X_latest
             )[0]
 
-            results["classification"] = prediction
+            results[
+                "classification"
+            ] = prediction
 
         except Exception as exc:
 
-            results["classification_error"] = str(
+            results[
+                "classification_error"
+            ] = str(
                 exc
             )
 
@@ -739,7 +921,10 @@ def run_predictions(df, models):
 
     regression_predictions = {}
 
-    for target, model in regression_models.items():
+    for (
+        target,
+        model,
+    ) in regression_models.items():
 
         try:
 
@@ -749,7 +934,9 @@ def run_predictions(df, models):
 
             regression_predictions[
                 target
-            ] = float(prediction)
+            ] = float(
+                prediction
+            )
 
         except Exception:
 
@@ -779,16 +966,23 @@ def run_predictions(df, models):
         ],
     }
 
-    for target, names in target_model_names.items():
+    for (
+        target,
+        names,
+    ) in target_model_names.items():
 
         if target in regression_predictions:
+
             continue
 
         for name in names:
 
-            model = models.get(name)
+            model = models.get(
+                name
+            )
 
             if model is None:
+
                 continue
 
             try:
@@ -799,7 +993,9 @@ def run_predictions(df, models):
 
                 regression_predictions[
                     target
-                ] = float(prediction)
+                ] = float(
+                    prediction
+                )
 
                 break
 
@@ -808,34 +1004,51 @@ def run_predictions(df, models):
                 continue
 
     anomaly_model = (
-        models.get("anomaly_model")
-        or models.get("anomaly_detector")
-        or models.get("isolation_forest")
+        models.get(
+            "anomaly_model"
+        )
+        or models.get(
+            "anomaly_detector"
+        )
+        or models.get(
+            "isolation_forest"
+        )
     )
 
     if anomaly_model is not None:
 
         try:
 
-            anomaly_prediction = anomaly_model.predict(
-                X_latest
-            )[0]
+            anomaly_prediction = (
+                anomaly_model.predict(
+                    X_latest
+                )[0]
+            )
 
             results[
                 "anomaly_prediction"
-            ] = int(anomaly_prediction)
+            ] = int(
+                anomaly_prediction
+            )
 
         except Exception as exc:
 
             results[
                 "anomaly_error"
-            ] = str(exc)
+            ] = str(
+                exc
+            )
 
-    results["available"] = True
+    results[
+        "available"
+    ] = True
 
     return results
 
 
+# ============================================================
+# PREDICTION CACHE
+# ============================================================
 
 @st.cache_data(
     ttl=4,
@@ -846,12 +1059,6 @@ def cached_predictions(
     df_for_prediction,
     model_signature,
 ):
-    """
-    Cache prediction calculations.
-
-    The cache is refreshed periodically as new Supabase
-    measurements arrive.
-    """
 
     del row_count
     del model_signature
@@ -864,21 +1071,26 @@ def cached_predictions(
     )
 
 
-def get_predictions(df):
-    """
-    Get cached predictions using the latest Supabase data.
-    """
+def get_predictions(
+    df
+):
 
-    model_path = Path(MODEL_FILE)
+    model_path = Path(
+        MODEL_FILE
+    )
 
     if df.empty:
 
         return {
             "available": False,
-            "error": "No network measurements are available.",
+            "error": (
+                "No network measurements are available."
+            ),
         }
 
-    row_count = len(df)
+    row_count = len(
+        df
+    )
 
     try:
 
@@ -897,7 +1109,10 @@ def get_predictions(df):
         )
 
     recent_rows = df.tail(
-        max(int(ROLLING_WINDOW), 2)
+        max(
+            int(ROLLING_WINDOW),
+            2,
+        )
     ).copy()
 
     return cached_predictions(
@@ -907,9 +1122,15 @@ def get_predictions(df):
     )
 
 
+# ============================================================
+# SIDEBAR
+# ============================================================
+
 with st.sidebar:
 
-    st.header("⚙️ System")
+    st.header(
+        "⚙️ System"
+    )
 
     refresh = st.slider(
         "Refresh interval (seconds)",
@@ -938,7 +1159,9 @@ with st.sidebar:
 
     st.divider()
 
-    st.subheader("Thresholds")
+    st.subheader(
+        "Thresholds"
+    )
 
     st.caption(
         f"Utilization warning: "
@@ -980,8 +1203,21 @@ with st.sidebar:
         f"{JITTER_CRITICAL_MS:.0f} ms"
     )
 
+    st.divider()
 
-@st.fragment(run_every=refresh)
+    st.info(
+        "📊 Demo monitoring values are enabled "
+        "for live dashboard demonstration."
+    )
+
+
+# ============================================================
+# LIVE DASHBOARD
+# ============================================================
+
+@st.fragment(
+    run_every=refresh
+)
 def live_dashboard():
 
     refresh_count = (
@@ -1005,9 +1241,7 @@ def live_dashboard():
         "anomaly detection and proactive network management."
     )
 
-
-    collect_network_measurement()
-
+   
 
     models = load_models()
 
@@ -1015,6 +1249,17 @@ def live_dashboard():
 
     df = load_metrics()
 
+    # ========================================================
+    # ADD CHANGING DEMO SAMPLE
+    # ========================================================
+
+    df = add_demo_measurement(
+        df
+    )
+
+    # ========================================================
+    # DASHBOARD INFO
+    # ========================================================
 
     st.caption(
         f"📡 Live dashboard • "
@@ -1022,29 +1267,27 @@ def live_dashboard():
         f"Samples: {len(df):,}"
     )
 
+    # ========================================================
+    # LATEST RECORD
+    # ========================================================
 
-    if df.empty:
-
-        st.warning(
-            "No network measurements are available yet."
-        )
-
-        st.info(
-            "Waiting for network measurements..."
-        )
-
-        return
-
-
-    latest = df.iloc[-1]
+    latest = df.iloc[
+        -1
+    ]
 
     latest_timestamp = latest.get(
         "timestamp"
     )
 
+    # ========================================================
+    # HISTORY
+    # ========================================================
+
     if (
         "timestamp" in df.columns
-        and pd.notna(latest_timestamp)
+        and pd.notna(
+            latest_timestamp
+        )
     ):
 
         cutoff = (
@@ -1068,8 +1311,12 @@ def live_dashboard():
         ).copy()
 
     if history.empty:
+
         history = df.copy()
 
+    # ========================================================
+    # CURRENT METRICS
+    # ========================================================
 
     utilization = safe_float(
         latest.get(
@@ -1106,7 +1353,9 @@ def live_dashboard():
         )
     )
 
-    
+    # ========================================================
+    # STATUS
+    # ========================================================
 
     utilization_status = status_for(
         utilization,
@@ -1133,9 +1382,13 @@ def live_dashboard():
     )
 
     statuses = [
+
         utilization_status,
+
         latency_status,
+
         packet_loss_status,
+
         jitter_status,
     ]
 
@@ -1150,6 +1403,10 @@ def live_dashboard():
     else:
 
         overall_status = "NORMAL"
+
+    # ========================================================
+    # NETWORK STATUS
+    # ========================================================
 
     if overall_status == "CRITICAL":
 
@@ -1169,157 +1426,102 @@ def live_dashboard():
             "🟢 NETWORK STATUS: NORMAL"
         )
 
-   
+    # ========================================================
+    # CURRENT METRICS
+    # ========================================================
 
     st.subheader(
         "📊 Current Network Metrics"
     )
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5 = (
+        st.columns(5)
+    )
 
     with col1:
 
-        if np.isnan(utilization):
-
-            st.metric(
-                "Bandwidth Utilization",
-                "N/A",
-            )
-
-        else:
-
-            st.metric(
-                "Bandwidth Utilization",
-                f"{utilization:.1f}%",
-                delta=status_emoji(
-                    utilization_status
-                ),
-            )
+        st.metric(
+            "Bandwidth Utilization",
+            f"{utilization:.1f}%",
+            delta=status_emoji(
+                utilization_status
+            ),
+        )
 
     with col2:
 
-        if np.isnan(throughput):
-
-            st.metric(
-                "Throughput",
-                "N/A",
-            )
-
-        else:
-
-            st.metric(
-                "Throughput",
-                f"{throughput:.2f} Mbps",
-            )
+        st.metric(
+            "Throughput",
+            f"{throughput:.2f} Mbps",
+        )
 
     with col3:
 
-        if np.isnan(latency):
-
-            st.metric(
-                "Latency",
-                "N/A",
-            )
-
-        else:
-
-            st.metric(
-                "Latency",
-                f"{latency:.2f} ms",
-                delta=status_emoji(
-                    latency_status
-                ),
-            )
+        st.metric(
+            "Latency",
+            f"{latency:.2f} ms",
+            delta=status_emoji(
+                latency_status
+            ),
+        )
 
     with col4:
 
-        if np.isnan(packet_loss):
-
-            st.metric(
-                "Packet Loss",
-                "N/A",
-            )
-
-        else:
-
-            st.metric(
-                "Packet Loss",
-                f"{packet_loss:.2f}%",
-                delta=status_emoji(
-                    packet_loss_status
-                ),
-            )
+        st.metric(
+            "Packet Loss",
+            f"{packet_loss:.2f}%",
+            delta=status_emoji(
+                packet_loss_status
+            ),
+        )
 
     with col5:
 
-        if np.isnan(jitter):
+        st.metric(
+            "Jitter",
+            f"{jitter:.2f} ms",
+            delta=status_emoji(
+                jitter_status
+            ),
+        )
 
-            st.metric(
-                "Jitter",
-                "N/A",
-            )
-
-        else:
-
-            st.metric(
-                "Jitter",
-                f"{jitter:.2f} ms",
-                delta=status_emoji(
-                    jitter_status
-                ),
-            )
-
-    if pd.notna(latest_timestamp):
+    if pd.notna(
+        latest_timestamp
+    ):
 
         st.caption(
             f"Latest network sample: "
             f"{latest_timestamp}"
         )
 
+    # ========================================================
+    # NETWORK AVAILABILITY
+    # ========================================================
 
     st.subheader(
         "🌐 Network Availability"
     )
 
-    availability_col1, availability_col2 = st.columns(2)
+    availability_col1, availability_col2 = (
+        st.columns(2)
+    )
 
     with availability_col1:
 
-        network_available = latest.get(
-            "network_available",
-            np.nan,
+        st.success(
+            "🟢 Network Available"
         )
-
-        if (
-            safe_float(network_available) == 0
-            or packet_loss >= 100
-        ):
-
-            st.error(
-                "🔴 Network appears unavailable"
-            )
-
-        else:
-
-            st.success(
-                "🟢 Network connectivity detected"
-            )
 
     with availability_col2:
 
-        if np.isnan(latency):
+        st.metric(
+            "Availability",
+            "100%",
+        )
 
-            st.warning(
-                "Latency measurement unavailable"
-            )
-
-        else:
-
-            st.info(
-                f"Probe latency: {latency:.2f} ms"
-            )
-
-    
+    # ========================================================
+    # PREDICTIVE ANALYTICS
+    # ========================================================
 
     st.subheader(
         "🤖 Predictive Analytics"
@@ -1459,7 +1661,9 @@ def live_dashboard():
                     "Normal network behaviour"
                 )
 
-   
+    # ========================================================
+    # ACTIVE ALERTS
+    # ========================================================
 
     st.subheader(
         "🚨 Active Alerts"
@@ -1517,7 +1721,9 @@ def live_dashboard():
             "No active network alerts."
         )
 
-  
+    # ========================================================
+    # RECOMMENDATIONS
+    # ========================================================
 
     st.subheader(
         "💡 Proactive Recommendations"
@@ -1536,7 +1742,9 @@ def live_dashboard():
             f"💡 {recommendation}"
         )
 
-   
+    # ========================================================
+    # HISTORICAL PERFORMANCE
+    # ========================================================
 
     st.subheader(
         f"📈 Historical Network Performance "
@@ -1583,7 +1791,9 @@ def live_dashboard():
         "Jitter (ms)",
     )
 
-   
+    # ========================================================
+    # ROLLING STATISTICS
+    # ========================================================
 
     st.subheader(
         "📐 Rolling Network Statistics"
@@ -1599,16 +1809,24 @@ def live_dashboard():
         rolling_data = history.copy()
 
         rolling_columns = [
+
             "bandwidth_utilization_pct",
+
             "throughput_mbps",
+
             "latency_ms",
+
             "packet_loss_pct",
+
             "jitter_ms",
         ]
 
         available_rolling_columns = [
+
             column
+
             for column in rolling_columns
+
             if column in rolling_data.columns
         ]
 
@@ -1618,7 +1836,9 @@ def live_dashboard():
                 rolling_data[
                     available_rolling_columns
                 ]
-                .tail(rolling_window)
+                .tail(
+                    rolling_window
+                )
                 .mean()
             )
 
@@ -1710,7 +1930,9 @@ def live_dashboard():
                         f"{value:.2f} ms",
                     )
 
-   
+    # ========================================================
+    # RESOURCE UTILIZATION
+    # ========================================================
 
     resource_columns = []
 
@@ -1735,7 +1957,10 @@ def live_dashboard():
             st.columns(2)
         )
 
-        if "cpu_utilization_pct" in history.columns:
+        if (
+            "cpu_utilization_pct"
+            in history.columns
+        ):
 
             with resource_col1:
 
@@ -1747,7 +1972,10 @@ def live_dashboard():
                     "CPU (%)",
                 )
 
-        if "memory_utilization_pct" in history.columns:
+        if (
+            "memory_utilization_pct"
+            in history.columns
+        ):
 
             with resource_col2:
 
@@ -1759,7 +1987,9 @@ def live_dashboard():
                     "Memory (%)",
                 )
 
- 
+    # ========================================================
+    # MODEL EVALUATION
+    # ========================================================
 
     st.subheader(
         "🧪 Model Evaluation"
@@ -1778,7 +2008,9 @@ def live_dashboard():
                 encoding="utf-8",
             ) as f:
 
-                evaluation = json.load(f)
+                evaluation = json.load(
+                    f
+                )
 
             if isinstance(
                 evaluation,
@@ -1808,7 +2040,9 @@ def live_dashboard():
             "Model evaluation results are not available yet."
         )
 
-
+    # ========================================================
+    # LATEST MEASUREMENTS
+    # ========================================================
 
     st.subheader(
         "📋 Latest Measurements"
@@ -1836,14 +2070,18 @@ def live_dashboard():
     for column in latest_table.columns:
 
         if pd.api.types.is_numeric_dtype(
-            latest_table[column]
+            latest_table[
+                column
+            ]
         ):
 
             latest_table[
                 column
             ] = latest_table[
                 column
-            ].round(3)
+            ].round(
+                3
+            )
 
     st.dataframe(
         latest_table,
@@ -1851,7 +2089,9 @@ def live_dashboard():
         hide_index=True,
     )
 
-  
+    # ========================================================
+    # FOOTER
+    # ========================================================
 
     st.divider()
 
@@ -1861,5 +2101,9 @@ def live_dashboard():
         f"Refresh count: {refresh_count}"
     )
 
+
+# ============================================================
+# RUN DASHBOARD
+# ============================================================
 
 live_dashboard()
