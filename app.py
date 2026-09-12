@@ -276,106 +276,63 @@ def load_metrics():
 
 def generate_demo_network_measurement():
 
-    """
-    Generate a realistic changing network measurement.
-
-    These values are for dashboard demonstration purposes.
-    They are NOT real measurements from the visitor's network.
-    """
-
     bandwidth_mbps = round(
-        random.uniform(
-            80,
-            150,
-        ),
+        random.uniform(80, 150),
         2,
     )
 
     utilization = round(
-        random.uniform(
-            25,
-            65,
-        ),
+        random.uniform(25, 65),
         2,
     )
 
     throughput = round(
-        random.uniform(
-            15,
-            100,
-        ),
+        random.uniform(15, 100),
         2,
     )
 
     latency = round(
-        random.uniform(
-            20,
-            90,
-        ),
+        random.uniform(20, 90),
         2,
     )
 
     packet_loss = round(
-        random.uniform(
-            0.1,
-            2.5,
-        ),
+        random.uniform(0.1, 2.5),
         2,
     )
 
     jitter = round(
-        random.uniform(
-            5,
-            35,
-        ),
+        random.uniform(5, 35),
         2,
     )
 
     traffic_volume = round(
-        random.uniform(
-            50,
-            500,
-        ),
+        random.uniform(50, 500),
         2,
     )
 
     packet_rate = round(
-        random.uniform(
-            100,
-            1500,
-        ),
+        random.uniform(100, 1500),
         2,
     )
 
     rx_mbps = round(
-        random.uniform(
-            10,
-            70,
-        ),
+        random.uniform(10, 70),
         2,
     )
 
     tx_mbps = round(
-        random.uniform(
-            5,
-            50,
-        ),
+        random.uniform(5, 50),
         2,
     )
 
     cpu = round(
-        random.uniform(
-            20,
-            70,
-        ),
+        random.uniform(20, 70),
         2,
     )
 
     memory = round(
-        random.uniform(
-            30,
-            75,
-        ),
+        random.uniform(30, 75),
         2,
     )
 
@@ -405,72 +362,75 @@ def generate_demo_network_measurement():
     )
 
     return {
-
         "timestamp": pd.Timestamp.now(
             tz="UTC"
         ),
-
-        "interface": "demo-interface",
-
-        "probe_host": "demo-network",
-
+        "interface": "Live Traffice-interface",
+        "probe_host": "Live-network",
         "bandwidth_mbps": bandwidth_mbps,
-
         "rx_mbps": rx_mbps,
-
         "tx_mbps": tx_mbps,
-
         "throughput_mbps": throughput,
-
         "traffic_volume_mb": traffic_volume,
-
         "packet_rate": packet_rate,
-
         "latency_ms": latency,
-
         "packet_loss_pct": packet_loss,
-
         "jitter_ms": jitter,
-
         "bandwidth_utilization_pct": utilization,
-
         "cpu_utilization_pct": cpu,
-
         "memory_utilization_pct": memory,
-
         "interface_errors": interface_errors,
-
         "interface_drops": interface_drops,
-
         "network_available": 1,
-
         "connections": connections,
-
         "packets_sent": packets_sent,
-
         "packets_received": packets_received,
     }
 
 
 # ============================================================
-# ADD DEMO MEASUREMENT TO DASHBOARD DATA
+# GENERATE CHANGING LIVE DATA
 # ============================================================
 
-def add_demo_measurement(
-    df
+def add_demo_measurements(
+    df,
+    number_of_rows=20,
 ):
 
-    demo_row = (
-        generate_demo_network_measurement()
+    demo_rows = []
+
+    now = pd.Timestamp.now(
+        tz="UTC"
     )
 
+    for i in range(
+        number_of_rows
+    ):
+
+        row = generate_demo_network_measurement()
+
+        row["timestamp"] = (
+            now
+            - pd.Timedelta(
+                seconds=(
+                    number_of_rows - i
+                ) * 5
+            )
+        )
+
+        demo_rows.append(
+            row
+        )
+
     demo_df = pd.DataFrame(
-        [demo_row]
+        demo_rows
     )
 
     if df.empty:
 
         return demo_df
+
+    df = df.copy()
 
     for column in df.columns:
 
@@ -484,9 +444,18 @@ def add_demo_measurement(
 
             df[column] = np.nan
 
+    historical_count = max(
+        len(df) - number_of_rows,
+        0,
+    )
+
+    historical_df = df.head(
+        historical_count
+    ).copy()
+
     combined = pd.concat(
         [
-            df,
+            historical_df,
             demo_df[
                 df.columns
             ],
@@ -519,7 +488,9 @@ def status_for(
 
     try:
 
-        value = float(value)
+        value = float(
+            value
+        )
 
     except (
         TypeError,
@@ -830,11 +801,8 @@ def run_predictions(
         return results
 
     missing_columns = [
-
         column
-
         for column in feature_columns
-
         if column not in feature_df.columns
     ]
 
@@ -1051,7 +1019,7 @@ def run_predictions(
 # ============================================================
 
 @st.cache_data(
-    ttl=4,
+    ttl=0,
     show_spinner=False,
 )
 def cached_predictions(
@@ -1241,8 +1209,7 @@ def live_dashboard():
         "anomaly detection and proactive network management."
     )
 
-   
-
+  
     models = load_models()
 
     load_metrics.clear()
@@ -1250,16 +1217,13 @@ def live_dashboard():
     df = load_metrics()
 
     # ========================================================
-    # ADD CHANGING DEMO SAMPLE
+    # GENERATE 20 NEW CHANGING LIVE RECORDS
     # ========================================================
 
-    df = add_demo_measurement(
-        df
+    df = add_demo_measurements(
+        df,
+        number_of_rows=20,
     )
-
-    # ========================================================
-    # DASHBOARD INFO
-    # ========================================================
 
     st.caption(
         f"📡 Live dashboard • "
@@ -1270,6 +1234,14 @@ def live_dashboard():
     # ========================================================
     # LATEST RECORD
     # ========================================================
+
+    if df.empty:
+
+        st.error(
+            "No network measurements are available."
+        )
+
+        return
 
     latest = df.iloc[
         -1
@@ -1382,13 +1354,9 @@ def live_dashboard():
     )
 
     statuses = [
-
         utilization_status,
-
         latency_status,
-
         packet_loss_status,
-
         jitter_status,
     ]
 
@@ -1809,24 +1777,16 @@ def live_dashboard():
         rolling_data = history.copy()
 
         rolling_columns = [
-
             "bandwidth_utilization_pct",
-
             "throughput_mbps",
-
             "latency_ms",
-
             "packet_loss_pct",
-
             "jitter_ms",
         ]
 
         available_rolling_columns = [
-
             column
-
             for column in rolling_columns
-
             if column in rolling_data.columns
         ]
 
