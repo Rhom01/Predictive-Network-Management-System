@@ -99,9 +99,39 @@ def prepare_record(row: dict) -> dict:
     record = {}
 
     for field in fields:
-        record[field] = clean_value(row.get(field))
+
+        value = clean_value(
+            row.get(field)
+        )
+
+        # Convert Unix timestamp to PostgreSQL timestamp
+        if field == "timestamp":
+            if value is not None:
+                from datetime import datetime, timezone
+
+                value = datetime.fromtimestamp(
+                    float(value),
+                    tz=timezone.utc
+                ).isoformat()
+
+        # PostgreSQL bigint columns
+        if field in {
+            "interface_errors",
+            "interface_drops",
+            "network_available",
+        }:
+            if value is not None:
+                value = int(
+                    round(
+                        float(value)
+                    )
+                )
+
+        record[field] = value
 
     return record
+
+
 
 
 def send_to_supabase(
@@ -146,7 +176,9 @@ def main():
 
     print()
     print("=" * 70)
-    print("CLOUD NETWORK COLLECTOR")
+    print(
+    "Cloud collector is running..."
+)
     print("=" * 70)
 
  
